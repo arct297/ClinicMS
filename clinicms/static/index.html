@@ -280,8 +280,8 @@
             </div>
             <nav class="navigation">
                 <a href="#">Home</a>
-                <a href="https://3ba3-5-34-127-237.ngrok-free.app/login" id="loginLink">Log In</a>
-                <a href="https://3ba3-5-34-127-237.ngrok-free.app/api/logout" id="logoutLink">Log Out</a>
+                <a href="/login" id="loginLink">Log In</a>
+                <a href="/api/logout" id="logoutLink">Log Out</a>
             </nav>
         </header>
 
@@ -369,6 +369,7 @@
         </section>
         
         <footer class="text-center py-3">
+            <a href="/api/ts-chat" style="color: white">Need help? Seek support!</a>
             <p>&copy; 2024 Clinic Management System</p>
         </footer>
 
@@ -402,7 +403,7 @@ document.querySelector("button").addEventListener("click", applyFilters);
         
         const { field, order } = sortMapping[sortValue] || { field: "first_name", order: "asc" };
         
-        const url = new URL("https://3ba3-5-34-127-237.ngrok-free.app/doctors");
+        const url = new URL("/doctors");
         const params = {
             sort: field,
             order: order,
@@ -422,9 +423,8 @@ document.querySelector("button").addEventListener("click", applyFilters);
             .then(data => {
             const doctors = data.content;
     
-             // Set total pages from the response
             renderDoctors(doctors);
-            updatePagination(); // Update pagination based on the new totalPages value
+            updatePagination(); 
         
             })
             .catch(error => console.error("Error loading doctors:", error));

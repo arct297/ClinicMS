@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Админский чат</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f4f4f4;
+            display: flex;
+        }
+        #chat-list {
+            width: 30%;
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0px 0px 10px #aaa;
+            overflow-y: auto;
+            height: 400px;
+        }
+        #chat-container {
+            width: 70%;
+            margin-left: 20px;
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0px 0px 10px #aaa;
+        }
+        #messages {
+            height: 300px;
+            overflow-y: scroll;
+            border: 1px solid #ddd;
+            padding: 10px;
+            background: #fff;
+        }
+        .message {
+            padding: 5px 10px;
+            margin: 5px 0;
+            border-radius: 5px;
+        }
+        .message.admin {
+            background: #d4edda;
+            text-align: right;
+        }
+        .message.client {
+            background: #f8d7da;
+            text-align: left;
+        }
+        #message-input {
+            width: calc(100% - 70px);
+            padding: 10px;
+            margin-top: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        #send-button {
+            padding: 10px;
+            background: #007bff;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+        .chat-item {
+            padding: 10px;
+            margin-bottom: 5px;
+            background: #e9ecef;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        .chat-item:hover {
+            background: #ced4da;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="chat-list">
+        <h2>Active chats</h2>
+        <div id="chats"></div>
+    </div>
+
+    <div id="chat-container">
+        <h2>Chat with client</h2>
+        <button id="close-chat-button" style="display: none; background: #dc3545; color: white; border: none; padding: 10px; cursor: pointer; margin-bottom: 10px;">
+            Close chat
+        </button>
+        <div id="messages"></div>
+        <input type="text" id="message-input" placeholder="Type message...">
+        <button id="send-button">Send</button>
+    </div>
+
+    <script>
+        const wsProtocol = window.location.protocol === "https:" ? "wss://" : "ws://";
+        const wsHost = window.location.host;
+        console.log(`${wsProtocol}${wsHost}/ws`);
+        const socket = new WebSocket(`${wsProtocol}${wsHost}/ws`);
+    
+
+
+        socket.onopen = function() {
+            console.log("Admin WebSocket connected");
+        };
+
+        socket.onerror = function(event) {
+            console.error("WebSocket error:", event);
+        };
+
+        const messagesContainer = document.getElementById("messages");
+        const messageInput = document.getElementById("message-input");
+        const sendButton = document.getElementById("send-button");
+        const chatsContainer = document.getElementById("chats");
+    
+        let chatId = null;
+        let role = "admin";
+    
+        const closeChatButton = document.getElementById("close-chat-button");
+    
+        async function closeChat() {
+            if (!chatId) return;
+            try {
+                const response = await fetch(`/admin/close_chat?chat_id=${chatId}`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                });
+
+                if (response.ok) {
+                    console.log("Chat is closed:", chatId);
+                } else {
+                    console.error("Failed to close chat");
+                }
+            } catch (error) {
+                console.error("Error closing chat:", error);
+            }
+        }
+    
+        async function loadChats() {
+            try {
+                const response = await fetch(`/admin/get_active_chats`);
+                const chats = await response.json();
+    
+                chatsContainer.innerHTML = "";
+                chats.forEach(addChatToList);
+            } catch (error) {
+                console.error("Error loading chats:", error);
+            }
+        }
+    
+        function addChatToList(chat) {
+            if (document.querySelector(`[data-chat-id="${chat.id}"]`)) return;
+
+            const div = document.createElement("div");
+            div.classList.add("chat-item");
+            div.innerText = `Chat #${chat.id} (Client ID: ${chat.client_id})`;
+            div.setAttribute("data-chat-id", chat.id);
+            div.onclick = () => selectChat(chat.id);
+            chatsContainer.appendChild(div);
+        }
+
+
+        function removeChatFromList(chatId) {
+            const chatElement = document.querySelector(`[data-chat-id="${chatId}"]`);
+            if (chatElement) {
+                chatElement.remove();
+            }
+        }
+    
+        async function selectChat(id) {
+            chatId = id;
+            messagesContainer.innerHTML = "<p>Messages are loading...</p>";
+            await loadMessages();
+            closeChatButton.style.display = "block";
+        }
+    
+        async function loadMessages() {
+            try {
+                const response = await fetch(`/api/get_messages?chat_id=${chatId}`);
+                const text = await response.text();
+                console.log("Raw API response:", text);
+    
+                const data = JSON.parse(text);
+                if (!Array.isArray(data)) {
+                    console.error("Invalid messages data:", data);
+                    return;
+                }
+    
+                messagesContainer.innerHTML = "";
+                data.forEach(addMessageToUI);
+            } catch (error) {
+                console.error("Error loading messages:", error);
+            }
+        }
+    
+        function addMessageToUI(message) {
+            if (message.chat_id !== chatId) return;
+    
+            const div = document.createElement("div");
+            div.classList.add("message", message.sender_role);
+            div.innerText = message.message_text;
+            messagesContainer.appendChild(div);
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+
+        function removeChatFromList(chatId) {
+            const chatElement = document.querySelector(`[data-chat-id="${chatId}"]`);
+            if (chatElement) {
+                chatElement.remove();
+            }
+        }
+
+    
+        socket.onmessage = function(event) {
+            const message = JSON.parse(event.data);
+            console.log("Received via WebSocket (Admin):", message);
+
+            if (message.type === "chat_closed") {
+                removeChatFromList(message.chat_id);
+                if (chatId === message.chat_id) {
+                    chatId = null;
+                    messagesContainer.innerHTML = "";
+                    closeChatButton.style.display = "none";
+                }
+                return;
+            }
+
+            if (message.type === "new_chat") {
+                addChatToList(message.chat);
+                return;
+            }
+
+            addMessageToUI(message);
+        };
+
+    
+        sendButton.onclick = function() {
+            const messageText = messageInput.value.trim();
+            if (!messageText || !chatId) return;
+    
+            const message = {
+                chat_id: chatId,
+                sender_role: role,
+                message_text: messageText
+            };
+    
+            socket.send(JSON.stringify(message));
+            messageInput.value = "";
+        };
+    
+        closeChatButton.onclick = closeChat;
+    
+        loadChats();
+    </script>
+    
+</body>
+</html>

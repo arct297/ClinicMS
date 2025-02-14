@@ -102,8 +102,13 @@
         </form>
 
         <div id="responseMessage" class="error-message"></div>
-    </div>
 
+    </div>
+    
+    <div class="container">
+        <a href="/admin/ts-chat" style="text-decoration: none;">Go to Tech Support chats</a>
+    </div>
+    
     <script>
         function goback() {
             window.location.href = "/";
@@ -124,7 +129,7 @@
 
     fetch("/mailing", {
         method: "POST",
-        body: formData,  // No need to set headers, FormData does that automatically
+        body: formData,  
     })
     .then(response => response.json())
     .then(data => {

@@ -153,7 +153,7 @@
 
 
     document.addEventListener("DOMContentLoaded", function () {
-    const baseUrl = "https://3ba3-5-34-127-237.ngrok-free.app/patients";
+    const baseUrl = "/patients";
 
     function validatePatientData(patient) {
 
@@ -365,7 +365,7 @@ function showAllPatients() {
 
         allPatientsList.innerHTML = "";
 
-        fetch("https://3ba3-5-34-127-237.ngrok-free.app/patients")
+        fetch("/patients")
             .then(handleResponse)
             .then((data) => {
                 if (data.code === 200) {

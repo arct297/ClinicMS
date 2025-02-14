@@ -7,34 +7,90 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/gorilla/websocket"
 	"github.com/joho/godotenv"
-	"golang.org/x/time/rate"
-
-	_ "github.com/lib/pq"
 
 	"clinicms/handlers"
 	"clinicms/logger"
+	"clinicms/models"
 	"clinicms/tools"
 )
 
-// Define a global rate limiter
-var limiter = rate.NewLimiter(1, 3) // 1 request per second with a burst of 3 requests
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool { return true },
+}
 
-// Rate-limiting middleware
-func rateLimiterMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !limiter.Allow() {
-			// If rate limit is exceeded, respond with 429 Too Many Requests
-			w.Header().Set("Retry-After", time.Now().Add(limiter.Reserve().Delay()).Format(time.RFC1123))
-			http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
-			return
+var clients = make(map[*websocket.Conn]bool)
+var clientsMutex sync.Mutex
+var broadcast = make(chan interface{})
+
+func handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	ws, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Println("WebSocket upgrade error:", err)
+		return
+	}
+	defer ws.Close()
+
+	clientsMutex.Lock()
+	clients[ws] = true
+	clientsMutex.Unlock()
+
+	for {
+		var msg models.Message
+		err := ws.ReadJSON(&msg)
+		if err != nil {
+			log.Println("WebSocket read error:", err)
+			clientsMutex.Lock()
+			delete(clients, ws)
+			clientsMutex.Unlock()
+			break
 		}
-		next.ServeHTTP(w, r)
-	})
+
+		saveMessageToDB(msg)
+		broadcast <- msg
+	}
+}
+
+func saveMessageToDB(msg models.Message) {
+	db := tools.DB
+	newMessage := models.Message{
+		ChatID:      msg.ChatID,
+		SenderID:    msg.SenderID,
+		SenderRole:  msg.SenderRole,
+		MessageText: msg.MessageText,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+
+	if err := db.Create(&newMessage).Error; err != nil {
+		log.Println("Error saving message to DB:", err)
+	}
+}
+
+func handleMessages() {
+	for {
+		msg := <-broadcast
+		log.Println("Broadcasting message:", msg)
+
+		clientsMutex.Lock()
+		for client := range clients {
+			err := client.WriteJSON(msg)
+			if err != nil {
+				log.Println("WebSocket send error:", err)
+				client.Close()
+				delete(clients, client)
+			} else {
+				log.Println("Message sent to client successfully")
+			}
+		}
+		clientsMutex.Unlock()
+	}
 }
 
 func main() {
@@ -43,28 +99,44 @@ func main() {
 		log.Fatalf("Error loading .env file: %v", err)
 	}
 
-	// Initialize the database
 	tools.InitDatabaseClient()
 
-	// Initialize logger
 	if err := logger.InitLogger(); err != nil {
 		log.Fatalf("Logger initialization failed: %v", err)
 	}
 
-	// Get SQL database instance from GORM
 	sqlDB, err := tools.DB.DB()
 	if err != nil {
 		log.Fatal("Failed to get sql.DB from GORM DB:", err)
 	}
 	defer sqlDB.Close()
 
-	// Initialize the router
+	go func() {
+		for {
+			msg := <-handlers.Broadcast
+			clientsMutex.Lock()
+			for client := range clients {
+				err := client.WriteJSON(msg)
+				if err != nil {
+					log.Println("WebSocket send error:", err)
+					client.Close()
+					delete(clients, client)
+				}
+			}
+			clientsMutex.Unlock()
+		}
+	}()
+
 	r := mux.NewRouter()
 
-	// Serve static files like HTML, CSS, JS
+	// WebSocket route
+	r.HandleFunc("/ws", handleWebSocket)
+	go handleMessages()
+
+	// Serve static files
 	r.PathPrefix("/static/").Handler(http.StripPrefix("/static/", http.FileServer(http.Dir("./static"))))
 
-	// Return index.html on root path
+	// HTML pages
 	r.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFile(w, r, filepath.Join("static", "login.html"))
 	}).Methods("GET")
@@ -78,14 +150,14 @@ func main() {
 		http.ServeFile(w, r, filepath.Join("static", "patients.html"))
 	}).Methods("GET")
 
-	// Public routes (no authentication required)
+	// Public API
 	publicRoutes := r.PathPrefix("/api").Subrouter()
 	publicRoutes.HandleFunc("/register", handlers.RegisterUser).Methods("POST")
 	publicRoutes.HandleFunc("/login", handlers.LoginUser).Methods("POST")
 	publicRoutes.HandleFunc("/logout", handlers.LogoutUser).Methods("GET")
 	publicRoutes.HandleFunc("/confirm", handlers.ConfirmEmail).Methods("GET")
 
-	// Protected routes (require authentication)
+	// Protected API
 	protectedRoutes := r.PathPrefix("/api").Subrouter()
 	protectedRoutes.Use(tools.JWTAuthMiddleware)
 	protectedRoutes.HandleFunc("/patients", handlers.GetPatientsList).Methods("GET")
@@ -94,44 +166,46 @@ func main() {
 	protectedRoutes.HandleFunc("/patients/{id}", handlers.UpdatePatient).Methods("PUT")
 	protectedRoutes.HandleFunc("/patients/{id}", handlers.DeletePatient).Methods("DELETE")
 
-	// Admin routes (require admin role)
+	// Chat routes
+	protectedRoutes.HandleFunc("/ts-chat", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, filepath.Join("static", "chat.html"))
+	}).Methods("GET")
+
+	protectedRoutes.HandleFunc("/create_chat", handlers.CreateChat(tools.DB)).Methods("POST")
+	protectedRoutes.HandleFunc("/close_chat", handlers.CloseChat(tools.DB)).Methods("POST")
+	protectedRoutes.HandleFunc("/send_message", handlers.SendMessage(tools.DB)).Methods("POST")
+	protectedRoutes.HandleFunc("/get_messages", handlers.GetChatMessages(tools.DB)).Methods("GET")
+	protectedRoutes.HandleFunc("/mark_as_read", handlers.MarkMessagesAsRead(tools.DB)).Methods("POST")
+
+	// Admin API
 	adminRoutes := r.PathPrefix("/admin").Subrouter()
 	adminRoutes.Use(tools.JWTAuthMiddleware)
 	adminRoutes.Use(tools.RoleMiddleware("admin"))
 	adminRoutes.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFile(w, r, filepath.Join("static", "admin.html"))
 	}).Methods("GET")
+	adminRoutes.HandleFunc("/ts-chat", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, filepath.Join("static", "admin-chat.html"))
+	}).Methods("GET")
 	adminRoutes.HandleFunc("/mailing", handlers.MakeMailing).Methods("POST")
 	adminRoutes.HandleFunc("/patients", handlers.GetPatientsList).Methods("GET")
 
-	// adminRoutes.HandleFunc("/users", handlers.GetUsersList).Methods("GET") // Example admin route
+	// Admin chat
+	adminRoutes.HandleFunc("/get_active_chats", handlers.GetActiveChats(tools.DB)).Methods("GET")
+	adminRoutes.HandleFunc("/close_chat", handlers.CloseChat(tools.DB)).Methods("POST")
 
-	// Patient API routes
-	// r.HandleFunc("/patients", handlers.CreatePatient).Methods("POST")        // Create patient
-	// r.HandleFunc("/patients/{id}", handlers.GetPatientByID).Methods("GET")   // Get patient by ID
-	// r.HandleFunc("/patients", handlers.GetPatientsList).Methods("GET")       // Get patients list
-	// r.HandleFunc("/patients/{id}", handlers.UpdatePatient).Methods("PUT")    // Update patient by ID
-	// r.HandleFunc("/patients/{id}", handlers.DeletePatient).Methods("DELETE") // Delete patient by ID
-
-	// Doctor API route
+	// Doctor API
 	r.HandleFunc("/doctors", handlers.GetDoctorsList).Methods("GET")
 
-	// Mailing API route
-
-	// Apply rate-limiting middleware
-	rateLimitedRouter := rateLimiterMiddleware(r)
-
-	// Create HTTP server
+	// Server setup
 	srv := &http.Server{
 		Addr:    ":8080",
-		Handler: rateLimitedRouter,
+		Handler: r,
 	}
 
-	// Channel to listen for OS signals
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
 
-	// Start server in a goroutine
 	go func() {
 		log.Println("Server is running on port 8080...")
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -139,11 +213,9 @@ func main() {
 		}
 	}()
 
-	// Wait for termination signal
 	<-quit
 	log.Println("Server is shutting down...")
 
-	// Graceful shutdown with a timeout of 30 seconds
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 

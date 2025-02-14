@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tech Support chat</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f4f4f4;
+        }
+        #chat-container {
+            width: 50%;
+            margin: auto;
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0px 0px 10px #aaa;
+        }
+        #messages {
+            height: 300px;
+            overflow-y: scroll;
+            border: 1px solid #ddd;
+            padding: 10px;
+            background: #fff;
+        }
+        .message {
+            padding: 5px 10px;
+            margin: 5px 0;
+            border-radius: 5px;
+        }
+        .message.client {
+            background: #d4edda;
+            text-align: right;
+        }
+        .message.admin {
+            background: #f8d7da;
+            text-align: left;
+        }
+        #message-input {
+            width: calc(100% - 70px);
+            padding: 10px;
+            margin-top: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        #send-button {
+            padding: 10px;
+            background: #28a745;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="chat-container">
+        <h2>Tech Support Chat</h2>
+        <div id="messages"></div>
+        <input type="text" id="message-input" placeholder="Input message...">
+        <button id="send-button">Send</button>
+    </div>
+
+    <script>
+        const wsProtocol = window.location.protocol === "https:" ? "wss://" : "ws://";
+        const wsHost = window.location.host;
+        console.log(`${wsProtocol}${wsHost}/ws`);
+        const socket = new WebSocket(`${wsProtocol}${wsHost}/ws`);
+    
+        const messagesContainer = document.getElementById("messages");
+        const messageInput = document.getElementById("message-input");
+        const sendButton = document.getElementById("send-button");
+    
+        let chatId = null;
+        let userId = null;
+        let role = "client";
+    
+        async function loadMessages() {
+            try {
+                const response = await fetch(`/api/get_messages?chat_id=${chatId}`);
+                
+                if (response.status == 401) {
+                    window.href.location = "/api/login"
+                    return;
+                }
+                
+                const data = await response.json();
+
+                if (!Array.isArray(data)) {
+                    console.error("Invalid messages data:", data);
+                    return;
+                }
+
+                messagesContainer.innerHTML = "";
+                data.forEach(msg => addMessageToUI(msg));
+            } catch (error) {
+                console.error("Error loading messages:", error);
+            }
+        }
+
+
+    
+        function addMessageToUI(message) {
+            console.log("Adding message to UI:", message);
+
+            if (!message || !message.message_text) {
+                console.warn("Skipping undefined message:", message);
+                return;
+            }
+
+            const div = document.createElement("div");
+            div.classList.add("message", message.sender_role || "unknown");
+            div.innerText = message.message_text || "[No message]";
+            messagesContainer.appendChild(div);
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+
+    
+        socket.onmessage = function (event) {
+            const message = JSON.parse(event.data);
+            console.log("Received via WebSocket:", message);
+
+            if (message.type === "chat_closed") {
+                console.warn("Chat has been closed, removing from UI...");
+                if (message.chat_id === chatId) {
+                    alert("Chat has been closed by administrator.");
+                    chatId = null;
+                    messagesContainer.innerHTML = "";
+                }
+                return;
+            }
+
+            if (!message || !message.message_text) {
+                console.warn("Skipping undefined or invalid message:", message);
+                return;
+            }
+
+            addMessageToUI(message);
+        };
+
+
+
+
+    
+        async function getChatId() {
+            try {
+                const response = await fetch("/api/create_chat", { method: "POST" });
+
+                if (!response.ok) {
+                    console.error("Error creating chat:", response.statusText);
+                    return;
+                }
+
+                const data = await response.json();
+                chatId = data.id;
+                userId = data.client_id;
+                console.log("Active chat ID:", chatId);
+
+                await loadMessages();
+            } catch (error) {
+                console.error("Network error while creating chat:", error);
+            }
+        }
+
+
+    
+        sendButton.onclick = async function () {
+            const messageText = messageInput.value.trim();
+            if (!messageText) return;
+
+            if (!chatId) {
+                console.log("No active chat, creating new chat...");
+                try {
+                    const response = await fetch("/api/create_chat", { method: "POST" });
+                    const data = await response.json();
+
+                    if (!response.ok) {
+                        console.error("Error creating chat:", data);
+                        return;
+                    }
+
+                    chatId = data.id;
+                    userId = data.client_id;
+                    console.log("New chat created:", chatId);
+                    
+                    await loadMessages();
+                } catch (error) {
+                    console.error("Network error while creating chat:", error);
+                    return;
+                }
+            }
+
+            console.log("Sending message to chat:", chatId);
+
+            const message = {
+                chat_id: chatId,
+                sender_id: userId,
+                sender_role: role,
+                message_text: messageText
+            };
+
+            socket.send(JSON.stringify(message));
+            messageInput.value = "";
+        };
+
+
+        getChatId();
+    </script>
+    
+    
+
+</body>
+</html>
